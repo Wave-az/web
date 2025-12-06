@@ -55,6 +55,9 @@ function App() {
   const [editingPolygonId, setEditingPolygonId] = useState<string | null>(null);
   const [editingPolygonName, setEditingPolygonName] = useState("");
   const [isMapLoaded, setIsMapLoaded] = useState(false);
+  const [mapType, setMapType] = useState<
+    "roadmap" | "satellite" | "terrain" | "hybrid"
+  >("roadmap");
   const mapRef = useRef<GoogleMapComponentRef>(null);
   const editingInputRef = useRef<HTMLInputElement>(null);
 
@@ -88,6 +91,7 @@ function App() {
           drawingMode={drawingMode}
           selectedPolygonId={selectedPolygonId}
           onMapLoaded={setIsMapLoaded}
+          mapTypeId={mapType}
           onPolygonComplete={(polygonData) => {
             if (polygonData.center) {
               setLatitude(polygonData.center.lat.toFixed(6));
@@ -380,6 +384,29 @@ function App() {
                   className="ring-8 ring-white/20 h-10 rounded-full bg-white pl-9 pr-4 text-sm w-full"
                   isMapLoaded={isMapLoaded}
                 />
+              </div>
+
+              {/* Map Type Selector */}
+              <div>
+                <Label className="text-sm text-white mb-2 block">
+                  Map Type
+                </Label>
+                <Select
+                  value={mapType}
+                  onValueChange={(
+                    value: "roadmap" | "satellite" | "terrain" | "hybrid"
+                  ) => setMapType(value)}
+                >
+                  <SelectTrigger className="w-full h-9 rounded-full bg-white text-sm shadow-sm ring-8 ring-white/20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="roadmap">Roadmap</SelectItem>
+                    <SelectItem value="satellite">Satellite</SelectItem>
+                    <SelectItem value="terrain">Terrain</SelectItem>
+                    <SelectItem value="hybrid">Hybrid</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Lat / Lon - Display for selected polygon */}
