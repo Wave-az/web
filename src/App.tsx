@@ -11,6 +11,11 @@ import {
   ZoomOut,
   Plus,
   Trash2,
+  ChevronDown,
+  Download,
+  Save,
+  FolderOpen,
+  FilePlusCorner,
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -34,6 +39,12 @@ import {
   type PolygonData,
 } from "./components/GoogleMap";
 import { PlacesAutocomplete } from "./components/PlacesAutocomplete";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 function App() {
   const [isMapSettingsOpen, setIsMapSettingsOpen] = useState(true);
@@ -58,6 +69,19 @@ function App() {
   const mapRef = useRef<GoogleMapComponentRef>(null);
   const editingInputRef = useRef<HTMLInputElement>(null);
 
+  const [units, setUnits] = useState<"metric" | "imperial">("metric");
+
+  const [projectTitle, setProjectTitle] = useState("My Project Name");
+  const [isEditingProjectTitle, setIsEditingProjectTitle] = useState(false);
+  const projectTitleInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isEditingProjectTitle) {
+      projectTitleInputRef.current?.focus();
+      projectTitleInputRef.current?.select();
+    }
+  }, [isEditingProjectTitle]);
+
   // Handle delete key to remove selected polygon
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -80,6 +104,90 @@ function App() {
 
   return (
     <main className="relative h-screen w-screen overflow-hidden bg-slate-900">
+      <div className="pointer-events-none absolute top-4 left-4 z-20 flex gap-5 items-center">
+        {/* My Project Name pill (no dropdown yet) */}
+        <div className="pointer-events-auto">
+          {isEditingProjectTitle ? (
+            <Input
+              ref={projectTitleInputRef}
+              value={projectTitle}
+              onChange={(e) => setProjectTitle(e.target.value)}
+              onBlur={() => setIsEditingProjectTitle(false)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  setIsEditingProjectTitle(false);
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setIsEditingProjectTitle(false);
+                }
+              }}
+              className="h-10 rounded-full bg-white px-6 text-sm font-medium text-gray-800 shadow-lg 
+                        ring-8 ring-white/40 border-0 focus-visible:ring-2 focus-visible:ring-blue-500"
+            />
+          ) : (
+            <Button
+              type="button"
+              onClick={() => setIsEditingProjectTitle(true)}
+              className="h-10 rounded-full bg-white px-6 text-sm font-medium text-gray-800 shadow-lg 
+                        ring-8 ring-white/40 hover:bg-white"
+            >
+              {projectTitle || "Untitled project"}
+            </Button>
+          )}
+        </div>
+        {/* File dropdown (with submenu like in your design) */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              className="pointer-events-auto rounded-full bg-white px-5 py-2 text-sm font-medium text-gray-800 shadow-lg ring-8 ring-white/40 hover:bg-white flex items-center gap-2"
+            >
+              <span>File</span>
+              <ChevronDown className="h-4 w-4 text-gray-500" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            sideOffset={12}
+            className="min-w-[260px] rounded-4xl border border-white/40 bg-white/80 p-4 shadow-2xl backdrop-blur-2xl text-sm text-gray-800 space-y-1"
+          >
+            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+              New Project
+              <FilePlusCorner />
+            </DropdownMenuItem>
+            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+              Open
+              <FolderOpen />
+            </DropdownMenuItem>
+            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+              Save
+              <Save />
+            </DropdownMenuItem>
+            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+              Export
+              <Download />
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* Config dropdown */}
+        <div className="pointer-events-auto rounded-full ring-8 ring-white/20 bg-white/20">
+          <Select value={units} onValueChange={(v: "metric" | "imperial") => setUnits(v)}>
+            <SelectTrigger className="w-full rounded-full bg-white text-sm shadow-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent
+              align="start"
+              className="rounded-4xl border border-white/40 bg-white/80 p-2 shadow-2xl backdrop-blur-2xl text-sm text-gray-800 space-y-1"
+            >
+              <SelectItem value="metric">Metric</SelectItem>
+              <SelectItem value="imperial">Imperial</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
       {/* Map background */}
       <div className="absolute inset-0">
         <GoogleMapComponent
@@ -188,8 +296,8 @@ function App() {
 
       {/* Polygon Tabs - Top of map */}
       {polygons.length > 0 && (
-        <div className="pointer-events-none absolute top-4 left-4 right-4 z-10">
-          <div className="pointer-events-auto flex gap-2 overflow-x-auto max-w-full">
+        <div className="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 z-10 w-full flex justify-center">
+          <div className="pointer-events-auto flex gap-2 overflow-x-auto max-w-[70%] justify-center">
             {polygons.map((poly) => (
               <div
                 key={poly.id}
@@ -201,11 +309,7 @@ function App() {
                 )}
                 onClick={() => {
                   setSelectedPolygonId(poly.id);
-                  // Fit map to polygon bounds
-                  if (mapRef.current) {
-                    mapRef.current.fitPolygonBounds(poly.id);
-                  }
-                  // Get fresh coordinates from the polygon in case it was edited
+                  if (mapRef.current) mapRef.current.fitPolygonBounds(poly.id);
                   const paths = poly.polygon.getPath();
                   if (paths) {
                     const freshCoords: Array<{ lat: string; lng: string }> = [];
@@ -215,11 +319,8 @@ function App() {
                         lng: latLng.lng().toFixed(6),
                       });
                     });
-                    if (freshCoords.length > 0) {
-                      setCoordinates(freshCoords);
-                    }
+                    setCoordinates(freshCoords);
 
-                    // Calculate center from fresh coordinates
                     let latSum = 0;
                     let lngSum = 0;
                     paths.forEach((latLng) => {
@@ -231,29 +332,7 @@ function App() {
                       setLatitude((latSum / count).toFixed(6));
                       setLongitude((lngSum / count).toFixed(6));
                     }
-                  } else if (poly.coordinates && poly.coordinates.length > 0) {
-                    // Fallback to stored coordinates if path is not available
-                    setCoordinates(
-                      poly.coordinates.map((c) => ({
-                        lat: c.lat.toFixed(6),
-                        lng: c.lng.toFixed(6),
-                      }))
-                    );
-                    if (poly.center) {
-                      setLatitude(poly.center.lat.toFixed(6));
-                      setLongitude(poly.center.lng.toFixed(6));
-                    }
                   }
-                }}
-                onDoubleClick={(e) => {
-                  e.stopPropagation();
-                  setEditingPolygonId(poly.id);
-                  setEditingPolygonName(poly.name);
-                  // Focus input after a brief delay to ensure it's rendered
-                  setTimeout(() => {
-                    editingInputRef.current?.focus();
-                    editingInputRef.current?.select();
-                  }, 0);
                 }}
               >
                 {editingPolygonId === poly.id ? (
@@ -272,35 +351,14 @@ function App() {
                       setEditingPolygonId(null);
                       setEditingPolygonName("");
                     }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        if (editingPolygonName.trim() && mapRef.current) {
-                          mapRef.current.updatePolygonName(
-                            poly.id,
-                            editingPolygonName.trim()
-                          );
-                        }
-                        setEditingPolygonId(null);
-                        setEditingPolygonName("");
-                      } else if (e.key === "Escape") {
-                        setEditingPolygonId(null);
-                        setEditingPolygonName("");
-                      }
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    className={cn(
-                      "bg-transparent border-none outline-none text-sm font-medium w-[120px] text-inherit px-1 rounded",
-                      selectedPolygonId === poly.id
-                        ? "text-white"
-                        : "text-gray-700"
-                    )}
+                    className="bg-transparent border-none outline-none text-sm font-medium w-[120px] text-inherit px-1 rounded"
                   />
                 ) : (
                   <span className="text-sm font-medium truncate max-w-[120px]">
                     {poly.name}
                   </span>
                 )}
+
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -329,6 +387,7 @@ function App() {
           </div>
         </div>
       )}
+
 
       {/* Control panel */}
       <div className="pointer-events-none absolute inset-0 flex flex-col items-end justify-start gap-3 p-4 sm:p-6 lg:p-8 overflow-auto">
