@@ -36,6 +36,7 @@ interface GoogleMapComponentProps {
   searchQuery?: string;
   drawingMode?: "polygon" | "rectangle" | null;
   onMapLoaded?: (isLoaded: boolean) => void;
+  mapTypeId?: "roadmap" | "satellite" | "terrain" | "hybrid";
 }
 
 export interface GoogleMapComponentRef {
@@ -74,6 +75,7 @@ export const GoogleMapComponent = forwardRef<
       searchQuery,
       drawingMode,
       onMapLoaded,
+      mapTypeId = "roadmap",
     },
     ref
   ) => {
@@ -101,11 +103,16 @@ export const GoogleMapComponent = forwardRef<
     const polygonIdCounter = useRef(0);
     const mapInitializedRef = useRef(false);
 
-    const onLoad = useCallback((mapInstance: google.maps.Map) => {
-      setMap(mapInstance);
-      geocoderRef.current = new google.maps.Geocoder();
-      mapInitializedRef.current = true;
-    }, []);
+    const onLoad = useCallback(
+      (mapInstance: google.maps.Map) => {
+        setMap(mapInstance);
+        geocoderRef.current = new google.maps.Geocoder();
+        mapInitializedRef.current = true;
+        // Set initial map type
+        mapInstance.setMapTypeId(mapTypeId);
+      },
+      [mapTypeId]
+    );
 
     const onUnmount = useCallback(() => {
       setMap(null);
@@ -233,6 +240,15 @@ export const GoogleMapComponent = forwardRef<
     useImperativeHandle(
       ref,
       () => ({
+        updatePolygonName: (polygonId: string, newName: string) => {
+          setPolygons((prev) => {
+            const polygon = prev.find((p) => p.id === polygonId);
+            if (polygon) {
+              polygon.name = newName;
+            }
+            return prev;
+          });
+        },
         setDrawingMode: (mode: "polygon" | "rectangle" | null) => {
           if (drawingManagerRef.current) {
             if (mode === "polygon") {
@@ -555,6 +571,13 @@ export const GoogleMapComponent = forwardRef<
       }
     }, [drawingMode]);
 
+    // Control map type from parent
+    useEffect(() => {
+      if (map) {
+        map.setMapTypeId(mapTypeId);
+      }
+    }, [map, mapTypeId]);
+
     if (!isLoaded) {
       return (
         <div className="w-full h-full flex items-center justify-center bg-slate-900">
@@ -576,6 +599,7 @@ export const GoogleMapComponent = forwardRef<
           streetViewControl: false,
           mapTypeControl: false,
           fullscreenControl: false,
+          mapTypeId: mapTypeId,
         }}
       >
         <DrawingManager
