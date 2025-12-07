@@ -21,7 +21,7 @@ export interface PolygonData {
   id: string;
   polygon: google.maps.Polygon;
   name: string;
-  type: "polygon" | "rectangle" | "country";
+  type: "polygon" | "rectangle" | "circle" | "country";
   center?: { lat: number; lng: number };
   coordinates?: Array<{ lat: number; lng: number }>;
 }
@@ -34,13 +34,13 @@ interface GoogleMapComponentProps {
   onPolygonClick?: (polygonData: PolygonData) => void;
   selectedPolygonId?: string | null;
   searchQuery?: string;
-  drawingMode?: "polygon" | "rectangle" | null;
+  drawingMode?: "polygon" | "rectangle" | "circle" | null;
   onMapLoaded?: (isLoaded: boolean) => void;
   mapTypeId?: "roadmap" | "satellite" | "terrain" | "hybrid";
 }
 
 export interface GoogleMapComponentRef {
-  setDrawingMode: (mode: "polygon" | "rectangle" | null) => void;
+  setDrawingMode: (mode: "polygon" | "rectangle" | "circle" | null) => void;
   clearPolygons: () => void;
   removePolygon: (id: string) => void;
   getPolygons: () => PolygonData[];
@@ -157,6 +157,29 @@ export const GoogleMapComponent = forwardRef<
       []
     );
 
+    // Calculate polygon area in hectares
+    const calculatePolygonArea = useCallback(
+      (polygon: google.maps.Polygon): number => {
+        const paths = polygon.getPath();
+        if (!paths || paths.getLength() < 3) return 0;
+
+        // Convert path to LatLng array for geometry calculation
+        const latLngArray: google.maps.LatLng[] = [];
+        paths.forEach((latLng) => {
+          latLngArray.push(latLng);
+        });
+
+        // Use Google Maps Geometry library to calculate area in square meters
+        // Then convert to hectares (1 hectare = 10,000 square meters)
+        const areaInSquareMeters =
+          google.maps.geometry.spherical.computeArea(latLngArray);
+        const areaInHectares = areaInSquareMeters / 10000;
+
+        return areaInHectares;
+      },
+      []
+    );
+
     // Update polygon styles based on selection
     useEffect(() => {
       polygons.forEach((polyData) => {
@@ -182,9 +205,31 @@ export const GoogleMapComponent = forwardRef<
     const onDrawingComplete = useCallback(
       (
         polygon: google.maps.Polygon,
-        type: "polygon" | "rectangle" = "polygon",
+        type: "polygon" | "rectangle" | "circle" = "polygon",
         name?: string
       ) => {
+        // Calculate area and validate (max 1000 hectares)
+        const areaInHectares = calculatePolygonArea(polygon);
+
+        if (areaInHectares > 1000) {
+          // Remove the polygon from map
+          polygon.setMap(null);
+
+          // Show error message
+          window.alert(
+            `Polygon area (${areaInHectares.toFixed(
+              2
+            )} ha) exceeds the maximum allowed size of 1000 hectares. Please draw a smaller polygon.`
+          );
+
+          // Reset drawing mode
+          if (drawingManagerRef.current) {
+            drawingManagerRef.current.setDrawingMode(null);
+          }
+
+          return;
+        }
+
         const center = getPolygonCenter(polygon);
         const coords = getPolygonCoordinates(polygon);
         const id = `polygon-${++polygonIdCounter.current}`;
@@ -233,6 +278,7 @@ export const GoogleMapComponent = forwardRef<
         getPolygonCoordinates,
         onPolygonsUpdate,
         onPolygonClick,
+        calculatePolygonArea,
       ]
     );
 
@@ -249,7 +295,7 @@ export const GoogleMapComponent = forwardRef<
             return prev;
           });
         },
-        setDrawingMode: (mode: "polygon" | "rectangle" | null) => {
+        setDrawingMode: (mode: "polygon" | "rectangle" | "circle" | null) => {
           if (drawingManagerRef.current) {
             if (mode === "polygon") {
               drawingManagerRef.current.setDrawingMode(
@@ -258,6 +304,10 @@ export const GoogleMapComponent = forwardRef<
             } else if (mode === "rectangle") {
               drawingManagerRef.current.setDrawingMode(
                 google.maps.drawing.OverlayType.RECTANGLE
+              );
+            } else if (mode === "circle") {
+              drawingManagerRef.current.setDrawingMode(
+                google.maps.drawing.OverlayType.CIRCLE
               );
             } else {
               drawingManagerRef.current.setDrawingMode(null);
@@ -336,6 +386,23 @@ export const GoogleMapComponent = forwardRef<
             editable: true,
           });
 
+          // Calculate area and validate (max 1000 hectares)
+          const areaInHectares = calculatePolygonArea(polygon);
+
+          if (areaInHectares > 1000) {
+            // Remove the polygon from map
+            polygon.setMap(null);
+
+            // Show error message
+            window.alert(
+              `Polygon area (${areaInHectares.toFixed(
+                2
+              )} ha) exceeds the maximum allowed size of 1000 hectares. Please enter coordinates for a smaller polygon.`
+            );
+
+            return;
+          }
+
           // Use the existing onDrawingComplete callback to handle adding it to state
           const center = getPolygonCenter(polygon);
           const polygonCoords = getPolygonCoordinates(polygon);
@@ -386,6 +453,7 @@ export const GoogleMapComponent = forwardRef<
         map,
         getPolygonCenter,
         getPolygonCoordinates,
+        calculatePolygonArea,
         onPolygonComplete,
         onPolygonClick,
       ]
@@ -444,6 +512,68 @@ export const GoogleMapComponent = forwardRef<
           }
         );
 
+        const circleCompleteListener = google.maps.event.addListener(
+          drawingManager,
+          "circlecomplete",
+          (circle: google.maps.Circle) => {
+            // Convert circle to polygon
+            if (!map) {
+              console.error("Map is not available for circle conversion");
+              circle.setMap(null);
+              drawingManager.setDrawingMode(null);
+              return;
+            }
+
+            try {
+              const center = circle.getCenter();
+              const radius = circle.getRadius();
+
+              if (!center) {
+                throw new Error("Circle center is not defined");
+              }
+
+              // Create a circular polygon with 64 points
+              const points: google.maps.LatLngLiteral[] = [];
+              const numPoints = 64;
+
+              for (let i = 0; i < numPoints; i++) {
+                const angle = (i * 360) / numPoints;
+                const point = google.maps.geometry.spherical.computeOffset(
+                  center,
+                  radius,
+                  angle
+                );
+                points.push({ lat: point.lat(), lng: point.lng() });
+              }
+
+              const polygon = new google.maps.Polygon({
+                paths: points,
+                strokeColor: "#FF0000",
+                strokeOpacity: 0.8,
+                strokeWeight: 2,
+                fillColor: "#FF0000",
+                fillOpacity: 0.35,
+                map: map,
+                clickable: true,
+                editable: true,
+              });
+
+              circle.setMap(null); // Remove circle, keep polygon
+              onDrawingComplete(polygon, "circle");
+              drawingManager.setDrawingMode(null);
+            } catch (error) {
+              console.error("Error converting circle to polygon:", error);
+              window.alert(
+                `Error creating circle: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              );
+              circle.setMap(null);
+              drawingManager.setDrawingMode(null);
+            }
+          }
+        );
+
         // Cleanup function to remove listeners
         return () => {
           if (polygonCompleteListener) {
@@ -451,6 +581,9 @@ export const GoogleMapComponent = forwardRef<
           }
           if (rectangleCompleteListener) {
             google.maps.event.removeListener(rectangleCompleteListener);
+          }
+          if (circleCompleteListener) {
+            google.maps.event.removeListener(circleCompleteListener);
           }
         };
       },
@@ -493,6 +626,23 @@ export const GoogleMapComponent = forwardRef<
                 fillOpacity: 0.35,
                 map: map,
               });
+
+              // Calculate area and validate (max 1000 hectares)
+              const areaInHectares = calculatePolygonArea(newPolygon);
+
+              if (areaInHectares > 1000) {
+                // Remove the polygon from map
+                newPolygon.setMap(null);
+
+                // Show error message
+                window.alert(
+                  `Selected area (${areaInHectares.toFixed(
+                    2
+                  )} ha) exceeds the maximum allowed size of 1000 hectares. Please select a smaller region or draw a custom polygon.`
+                );
+
+                return;
+              }
 
               // Fit map to bounds
               map.fitBounds(bounds);
@@ -550,6 +700,7 @@ export const GoogleMapComponent = forwardRef<
       onPolygonComplete,
       getPolygonCenter,
       getPolygonCoordinates,
+      calculatePolygonArea,
       onPolygonClick,
       onPolygonsUpdate,
     ]);
@@ -564,6 +715,10 @@ export const GoogleMapComponent = forwardRef<
         } else if (drawingMode === "rectangle") {
           drawingManagerRef.current.setDrawingMode(
             google.maps.drawing.OverlayType.RECTANGLE
+          );
+        } else if (drawingMode === "circle") {
+          drawingManagerRef.current.setDrawingMode(
+            google.maps.drawing.OverlayType.CIRCLE
           );
         } else {
           drawingManagerRef.current.setDrawingMode(null);
@@ -616,6 +771,13 @@ export const GoogleMapComponent = forwardRef<
               zIndex: 1,
             },
             rectangleOptions: {
+              fillColor: "#FF0000",
+              fillOpacity: 0.35,
+              strokeWeight: 2,
+              clickable: true,
+              editable: true,
+            },
+            circleOptions: {
               fillColor: "#FF0000",
               fillOpacity: 0.35,
               strokeWeight: 2,

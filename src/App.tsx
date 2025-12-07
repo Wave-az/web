@@ -1,10 +1,10 @@
 // src/App.tsx
 import { useState, useRef, useEffect } from "react";
 import {
-  Search,
   Map,
   Square,
   PenTool,
+  Circle,
   ChevronRight,
   X,
   ZoomIn,
@@ -16,11 +16,11 @@ import {
   Save,
   FolderOpen,
   FilePlusCorner,
+  FileText,
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectTrigger,
@@ -38,7 +38,7 @@ import {
   type GoogleMapComponentRef,
   type PolygonData,
 } from "./components/GoogleMap";
-import { PlacesAutocomplete } from "./components/PlacesAutocomplete";
+import { COUNTRIES } from "./helpers/countries";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { SimpleCombobox, type SimpleOption } from "./components/SimpleCombobox";
 import { CURRENT_YEAR, getDaysInMonth, MIN_YEAR } from "./helpers/date-helper";
+import { generatePDFReport } from "./helpers/pdf-generator";
 
 type SummaryPanelKey =
   | "flood_risk"
@@ -87,6 +88,44 @@ type AnalysisResponse = {
   >;
 };
 
+// Project file format (serializable)
+type SavedPolygonData = {
+  id: string;
+  name: string;
+  type: "polygon" | "rectangle" | "circle" | "country";
+  center?: { lat: number; lng: number };
+  coordinates: Array<{ lat: number; lng: number }>;
+};
+
+type ProjectFile = {
+  version: string;
+  metadata: {
+    name: string;
+    createdAt: string;
+    lastModified: string;
+  };
+  project: {
+    title: string;
+    locationSearch: string;
+    latitude: string;
+    longitude: string;
+    coordinates: Array<{ lat: string; lng: string }>;
+    mapType: "roadmap" | "satellite" | "terrain" | "hybrid";
+    units: "metric" | "imperial";
+    dateRange: {
+      fromYear: string;
+      fromMonth: string;
+      fromDay: string;
+      toYear: string;
+      toMonth: string;
+      toDay: string;
+    };
+    polygons: SavedPolygonData[];
+    selectedPolygonId: string | null;
+    analysis?: Record<string, AnalysisResponse>; // Analysis per polygon ID
+  };
+};
+
 function App() {
   const [isMapSettingsOpen, setIsMapSettingsOpen] = useState(true);
   const [isRisksOpen, setIsRisksOpen] = useState(false);
@@ -98,7 +137,7 @@ function App() {
     Array<{ lat: string; lng: string }>
   >([{ lat: "", lng: "" }]);
   const [drawingMode, setDrawingMode] = useState<
-    "polygon" | "rectangle" | null
+    "polygon" | "rectangle" | "circle" | null
   >(null);
   const [polygons, setPolygons] = useState<PolygonData[]>([]);
   const [selectedPolygonId, setSelectedPolygonId] = useState<string | null>(
@@ -106,7 +145,6 @@ function App() {
   );
   const [editingPolygonId, setEditingPolygonId] = useState<string | null>(null);
   const [editingPolygonName, setEditingPolygonName] = useState("");
-  const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [mapType, setMapType] = useState<
     "roadmap" | "satellite" | "terrain" | "hybrid"
   >("roadmap");
@@ -127,7 +165,9 @@ function App() {
   const [toMonth, setToMonth] = useState("");
   const [toDay, setToDay] = useState("");
 
-  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [analysis, setAnalysis] = useState<Record<string, AnalysisResponse>>(
+    {}
+  );
   const [isRequesting, setIsRequesting] = useState(false);
 
   const normalizeCoordinates = (
@@ -221,7 +261,7 @@ function App() {
     };
   };
 
-  const API_URL = "http://localhost:3003/suitability/analyze";
+  const API_URL = "http://localhost:3000/suitability/analyze";
 
   const buildApiRequestBody = () => {
     const coords = getActiveCoordinates();
@@ -247,7 +287,7 @@ function App() {
     };
   };
 
-  const handleRunAnalysis = async (sourceLabel: string) => {
+  const handleRunAnalysis = async () => {
     try {
       setIsRequesting(true);
       const body = buildApiRequestBody();
@@ -264,14 +304,16 @@ function App() {
 
       const response = (await res.json()) as AnalysisResponse;
 
-      setAnalysis(response);
-      window.alert(
-        `${sourceLabel}\nRequest body:\n${JSON.stringify(
-          body,
-          null,
-          2
-        )}\n\nResponse:\n${JSON.stringify(response, null, 2)}`
-      );
+      // Store analysis for the selected polygon (or first polygon if none selected)
+      const polygonId =
+        selectedPolygonId || (polygons.length > 0 ? polygons[0].id : null);
+
+      if (polygonId) {
+        setAnalysis((prev) => ({
+          ...prev,
+          [polygonId]: response,
+        }));
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       window.alert(`Request failed: ${message}`);
@@ -280,24 +322,232 @@ function App() {
     }
   };
 
-  const handleRequestSuitability = () =>
-    handleRunAnalysis("Suitability request");
+  const handleRequestSuitability = () => handleRunAnalysis();
 
-  const handleRequestRisks = () => handleRunAnalysis("Risks request");
+  const handleRequestRisks = () => handleRunAnalysis();
 
-  const handleFileAction = (action: string) => {
+  // Convert polygon data to serializable format
+  const getSerializablePolygons = (): SavedPolygonData[] => {
+    return polygons.map((poly) => {
+      const coords = getPolygonCoordinates(poly);
+      return {
+        id: poly.id,
+        name: poly.name,
+        type: poly.type,
+        center: poly.center,
+        coordinates: coords,
+      };
+    });
+  };
+
+  // Save project to JSON file
+  const handleSaveProject = () => {
     try {
-      const body = buildApiRequestBody();
-      window.alert(
-        `File action: ${action}\nCurrent request body:\n${JSON.stringify(
-          body,
-          null,
-          2
-        )}`
-      );
+      const projectData: ProjectFile = {
+        version: "1.0.0",
+        metadata: {
+          name: projectTitle,
+          createdAt: new Date().toISOString(),
+          lastModified: new Date().toISOString(),
+        },
+        project: {
+          title: projectTitle,
+          locationSearch,
+          latitude,
+          longitude,
+          coordinates,
+          mapType,
+          units,
+          dateRange: {
+            fromYear,
+            fromMonth,
+            fromDay,
+            toYear,
+            toMonth,
+            toDay,
+          },
+          polygons: getSerializablePolygons(),
+          selectedPolygonId,
+          analysis: Object.keys(analysis).length > 0 ? analysis : undefined,
+        },
+      };
+
+      const jsonString = JSON.stringify(projectData, null, 2);
+      const blob = new Blob([jsonString], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${projectTitle.replace(/[^a-z0-9]/gi, "_")}_${new Date()
+        .toISOString()
+        .slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      window.alert(`File action blocked: ${message}`);
+      window.alert(`Failed to save project: ${message}`);
+    }
+  };
+
+  // Load project from JSON file
+  const handleLoadProject = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json,.json";
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const content = event.target?.result as string;
+          const projectData: ProjectFile = JSON.parse(content);
+
+          // Validate version
+          if (!projectData.version || !projectData.project) {
+            throw new Error("Invalid project file format");
+          }
+
+          // Restore project state
+          if (projectData.project.title) {
+            setProjectTitle(projectData.project.title);
+          }
+          setLocationSearch(projectData.project.locationSearch || "");
+          setLatitude(projectData.project.latitude || "");
+          setLongitude(projectData.project.longitude || "");
+          setCoordinates(
+            projectData.project.coordinates.length > 0
+              ? projectData.project.coordinates
+              : [{ lat: "", lng: "" }]
+          );
+          setMapType(projectData.project.mapType || "roadmap");
+          setUnits(projectData.project.units || "metric");
+
+          // Restore date range
+          if (projectData.project.dateRange) {
+            setFromYear(projectData.project.dateRange.fromYear || "");
+            setFromMonth(projectData.project.dateRange.fromMonth || "");
+            setFromDay(projectData.project.dateRange.fromDay || "");
+            setToYear(projectData.project.dateRange.toYear || "");
+            setToMonth(projectData.project.dateRange.toMonth || "");
+            setToDay(projectData.project.dateRange.toDay || "");
+          }
+
+          // Restore polygons
+          if (
+            projectData.project.polygons &&
+            projectData.project.polygons.length > 0
+          ) {
+            // Clear existing polygons first
+            if (mapRef.current) {
+              mapRef.current.clearPolygons();
+            }
+
+            // Restore each polygon
+            projectData.project.polygons.forEach((savedPoly) => {
+              if (
+                savedPoly.coordinates &&
+                savedPoly.coordinates.length >= 3 &&
+                mapRef.current
+              ) {
+                mapRef.current.createPolygonFromCoordinates(
+                  savedPoly.coordinates,
+                  savedPoly.name
+                );
+              }
+            });
+
+            // Restore selected polygon if exists
+            if (projectData.project.selectedPolygonId) {
+              // Wait a bit for polygons to be created, then select
+              setTimeout(() => {
+                setSelectedPolygonId(projectData.project.selectedPolygonId);
+              }, 500);
+            }
+          }
+
+          // Restore analysis (per polygon)
+          if (projectData.project.analysis) {
+            setAnalysis(projectData.project.analysis);
+          } else {
+            setAnalysis({});
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          window.alert(`Failed to load project: ${message}`);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
+  // New project - reset everything
+  const handleNewProject = () => {
+    if (
+      window.confirm("Create a new project? All unsaved changes will be lost.")
+    ) {
+      // Clear all polygons
+      if (mapRef.current) {
+        mapRef.current.clearPolygons();
+      }
+
+      // Reset state
+      setProjectTitle("My Project Name");
+      setLocationSearch("");
+      setLatitude("");
+      setLongitude("");
+      setCoordinates([{ lat: "", lng: "" }]);
+      setSelectedPolygonId(null);
+      setDrawingMode(null);
+      setAnalysis({});
+      setFromYear("");
+      setFromMonth("");
+      setFromDay("");
+      setToYear("");
+      setToMonth("");
+      setToDay("");
+      setMapType("roadmap");
+    }
+  };
+
+  const handleFileAction = (action: string) => {
+    if (action === "New Project") {
+      handleNewProject();
+    } else if (action === "Open Project") {
+      handleLoadProject();
+    } else if (action === "Save Project") {
+      handleSaveProject();
+    } else if (action === "Export Project") {
+      handleSaveProject(); // Export and Save do the same thing for now
+    }
+  };
+
+  const handleExportPDF = () => {
+    try {
+      generatePDFReport({
+        projectTitle,
+        polygons,
+        locationSearch,
+        latitude,
+        longitude,
+        dateRange: {
+          fromYear,
+          fromMonth,
+          fromDay,
+          toYear,
+          toMonth,
+          toDay,
+        },
+        mapType,
+        analysis: Object.keys(analysis).length > 0 ? analysis : undefined,
+        units,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      window.alert(`Failed to generate PDF: ${message}`);
     }
   };
 
@@ -463,8 +713,24 @@ function App() {
     },
   };
 
-  const getSummaryPanel = (key: SummaryPanelKey) =>
-    analysis?.summary_panels[key] ?? summaryFallbacks[key];
+  // Get analysis for selected polygon
+  const getCurrentAnalysis = (): AnalysisResponse | null => {
+    if (!selectedPolygonId) return null;
+    return analysis[selectedPolygonId] || null;
+  };
+
+  const getSummaryPanel = (key: SummaryPanelKey) => {
+    const currentAnalysis = getCurrentAnalysis();
+    return currentAnalysis?.summary_panels[key] ?? summaryFallbacks[key];
+  };
+
+  // Get color for suitability score
+  const getSuitabilityScoreColor = (score: number): string => {
+    if (score <= 30) return "text-red-600";
+    if (score <= 50) return "text-orange-500";
+    if (score <= 70) return "text-yellow-500";
+    return "text-green-600";
+  };
 
   const getRiskColor = (label: string) => {
     const normalized = label.toLowerCase();
@@ -503,6 +769,14 @@ function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selectedPolygonId]);
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (editingPolygonId && editingInputRef.current) {
+      editingInputRef.current.focus();
+      editingInputRef.current.select();
+    }
+  }, [editingPolygonId]);
 
   return (
     <main className="relative h-screen w-screen overflow-hidden bg-slate-900">
@@ -592,6 +866,16 @@ function App() {
               Export
               <Download />
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleExportPDF();
+              }}
+              className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white"
+            >
+              Export PDF Report
+              <FileText />
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -622,7 +906,6 @@ function App() {
           searchQuery={locationSearch}
           drawingMode={drawingMode}
           selectedPolygonId={selectedPolygonId}
-          onMapLoaded={setIsMapLoaded}
           mapTypeId={mapType}
           onPolygonComplete={(polygonData) => {
             if (polygonData.center) {
@@ -736,6 +1019,8 @@ function App() {
                     : "bg-white/65 backdrop-blur-[60px] text-gray-700 hover:bg-white border border-white/20 shadow-lg"
                 )}
                 onClick={() => {
+                  // Don't select if we're about to double-click
+                  if (editingPolygonId === poly.id) return;
                   setSelectedPolygonId(poly.id);
                   if (mapRef.current) mapRef.current.fitPolygonBounds(poly.id);
                   const paths = poly.polygon.getPath();
@@ -762,6 +1047,11 @@ function App() {
                     }
                   }
                 }}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditingPolygonId(poly.id);
+                  setEditingPolygonName(poly.name);
+                }}
               >
                 {editingPolygonId === poly.id ? (
                   <input
@@ -778,6 +1068,23 @@ function App() {
                       }
                       setEditingPolygonId(null);
                       setEditingPolygonName("");
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (editingPolygonName.trim() && mapRef.current) {
+                          mapRef.current.updatePolygonName(
+                            poly.id,
+                            editingPolygonName.trim()
+                          );
+                        }
+                        setEditingPolygonId(null);
+                        setEditingPolygonName("");
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        setEditingPolygonId(null);
+                        setEditingPolygonName("");
+                      }
                     }}
                     className="bg-transparent border-none outline-none text-sm font-medium w-[120px] text-inherit px-1 rounded"
                   />
@@ -827,14 +1134,27 @@ function App() {
               </p>
             </div>
             <div className="flex flex-col items-end gap-2">
-              <Label className="text-2xl text-green-600">
-                {analysis ? `${analysis.suitability.score}/100` : "—"}
-              </Label>
-              {analysis?.suitability.fao_class && (
-                <p className="text-xs text-gray-500">
-                  {analysis.suitability.fao_class}
-                </p>
-              )}
+              {(() => {
+                const currentAnalysis = getCurrentAnalysis();
+                const score = currentAnalysis?.suitability.score;
+                const scoreColor = score
+                  ? getSuitabilityScoreColor(score)
+                  : "text-gray-600";
+                return (
+                  <>
+                    <Label className={cn("text-2xl", scoreColor)}>
+                      {currentAnalysis
+                        ? `${currentAnalysis.suitability.score}/100`
+                        : "—"}
+                    </Label>
+                    {currentAnalysis?.suitability.fao_class && (
+                      <p className="text-xs text-gray-500">
+                        {currentAnalysis.suitability.fao_class}
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
               <Button
                 size="sm"
                 className="h-8 rounded-full bg-green-50 text-green-700 hover:bg-green-100"
@@ -866,23 +1186,33 @@ function App() {
 
           {isMapSettingsOpen && (
             <CardContent className="space-y-6">
-              {/* Location search */}
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-600 z-10" />
-                <PlacesAutocomplete
+              {/* Country Selector */}
+              <div>
+                <Label className="text-sm text-white mb-2 block">Country</Label>
+                <Select
                   value={locationSearch}
-                  onChange={setLocationSearch}
-                  onPlaceSelect={(place) => {
-                    if (place.name) {
-                      setLocationSearch(place.name);
-                    } else if (place.formatted_address) {
-                      setLocationSearch(place.formatted_address);
+                  onValueChange={(value) => {
+                    setLocationSearch(value);
+                    const selectedCountry = COUNTRIES.find(
+                      (c) => c.name === value
+                    );
+                    if (selectedCountry) {
+                      setLatitude(selectedCountry.lat.toFixed(6));
+                      setLongitude(selectedCountry.lng.toFixed(6));
                     }
                   }}
-                  placeholder="Location Search (e.g., Azerbaijan, Turkey, USA)"
-                  className="ring-8 ring-white/20 h-10 rounded-full bg-white pl-9 pr-4 text-sm w-full"
-                  isMapLoaded={isMapLoaded}
-                />
+                >
+                  <SelectTrigger className="w-full h-10 rounded-full bg-white text-sm shadow-sm ring-8 ring-white/20">
+                    <SelectValue placeholder="Select a country" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60">
+                    {COUNTRIES.map((country) => (
+                      <SelectItem key={country.code} value={country.name}>
+                        {country.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Map Type Selector */}
@@ -1127,7 +1457,7 @@ function App() {
               </div>
 
               {/* Grid options */}
-              <div className="space-y-2 rounded-2xl ring-8 ring-white/20 bg-white/20">
+              {/* <div className="space-y-2 rounded-2xl ring-8 ring-white/20 bg-white/20">
                 <label className="flex items-center gap-2 text-sm p-3 rounded-full bg-white text-gray-600">
                   <Checkbox className="h-4 w-4" />
                   <span>Sentinel-2 Grid (Tile ID)</span>
@@ -1136,9 +1466,9 @@ function App() {
                   <Checkbox className="h-4 w-4 " />
                   <span>Landsat Grid (WRS2 Path/Row)</span>
                 </label>
-              </div>
+              </div> */}
 
-              <div className="space-y-2 rounded-2xl ring-8 ring-white/20 bg-white/20">
+              {/* <div className="space-y-2 rounded-2xl ring-8 ring-white/20 bg-white/20">
                 <label className="flex items-center gap-2 text-sm p-3 rounded-full bg-white text-gray-600">
                   <Checkbox className="h-4 w-4" />
                   <span>AOI Boundary</span>
@@ -1151,7 +1481,7 @@ function App() {
                   <Checkbox className="h-4 w-4 " />
                   <span>NDWI Heatmap</span>
                 </label>
-              </div>
+              </div> */}
 
               {/* Product Type – single choice select with 4 options */}
               <div className="rounded-full ring-8 ring-white/20 bg-white/20">
@@ -1183,6 +1513,8 @@ function App() {
                       setDrawingMode("polygon");
                     } else if (value === "rectangle") {
                       setDrawingMode("rectangle");
+                    } else if (value === "circle") {
+                      setDrawingMode("circle");
                     } else {
                       setDrawingMode(null);
                     }
@@ -1196,6 +1528,12 @@ function App() {
                     className="h-8 w-8 rounded-xl"
                   >
                     <Square className="h-4 w-4" />
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    value="circle"
+                    className="h-8 w-8 rounded-xl"
+                  >
+                    <Circle className="h-4 w-4" />
                   </ToggleGroupItem>
                   <ToggleGroupItem
                     value="polygon"
@@ -1259,7 +1597,8 @@ function App() {
 
               <div className="flex flex-col gap-2 ring-8 ring-white/20 rounded-3xl bg-white/20">
                 {riskItems.map((item) => {
-                  const risk = analysis?.risks[item.key];
+                  const currentAnalysis = getCurrentAnalysis();
+                  const risk = currentAnalysis?.risks[item.key];
                   const label = risk?.label ?? "Unknown";
                   const footnote =
                     risk?.footnote ?? "Based on water percentage change*";
@@ -1313,14 +1652,27 @@ function App() {
                     </p>
                   </div>
                   <div className="flex flex-col items-end">
-                    <Label className="text-2xl text-green-600">
-                      {analysis ? `${analysis.suitability.score}/100` : "—"}
-                    </Label>
-                    {analysis?.suitability.fao_class && (
-                      <span className="text-xs text-gray-500">
-                        {analysis.suitability.fao_class}
-                      </span>
-                    )}
+                    {(() => {
+                      const currentAnalysis = getCurrentAnalysis();
+                      const score = currentAnalysis?.suitability.score;
+                      const scoreColor = score
+                        ? getSuitabilityScoreColor(score)
+                        : "text-gray-600";
+                      return (
+                        <>
+                          <Label className={cn("text-2xl", scoreColor)}>
+                            {currentAnalysis
+                              ? `${currentAnalysis.suitability.score}/100`
+                              : "—"}
+                          </Label>
+                          {currentAnalysis?.suitability.fao_class && (
+                            <span className="text-xs text-gray-500">
+                              {currentAnalysis.suitability.fao_class}
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
 
