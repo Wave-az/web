@@ -45,6 +45,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { SimpleCombobox, type SimpleOption } from "./components/SimpleCombobox";
+import { CURRENT_YEAR, getDaysInMonth, MIN_YEAR } from "./helpers/date-helper";
 
 function App() {
   const [isMapSettingsOpen, setIsMapSettingsOpen] = useState(true);
@@ -77,6 +79,119 @@ function App() {
   const [projectTitle, setProjectTitle] = useState("My Project Name");
   const [isEditingProjectTitle, setIsEditingProjectTitle] = useState(false);
   const projectTitleInputRef = useRef<HTMLInputElement>(null);
+
+  const [fromYear, setFromYear] = useState("");
+  const [fromMonth, setFromMonth] = useState("");
+  const [fromDay, setFromDay] = useState("");
+
+  const [toYear, setToYear] = useState("");
+  const [toMonth, setToMonth] = useState("");
+  const [toDay, setToDay] = useState("");
+
+    const yearOptions: SimpleOption[] = Array.from(
+    { length: CURRENT_YEAR - MIN_YEAR + 1 },
+    (_, idx) => {
+      const y = CURRENT_YEAR - idx;
+      return { label: String(y), value: String(y) };
+    }
+  );
+
+  const maxFromDay = getDaysInMonth(fromYear, fromMonth);
+  const maxToDay = getDaysInMonth(toYear, toMonth);
+
+  const fromDayOptions: SimpleOption[] = Array.from(
+    { length: maxFromDay },
+    (_, i) => {
+      const d = i + 1;
+      return { label: String(d), value: String(d) };
+    }
+  );
+
+  const toDayOptions: SimpleOption[] = Array.from(
+    { length: maxToDay },
+    (_, i) => {
+      const d = i + 1;
+      return { label: String(d), value: String(d) };
+    }
+  );
+
+  const buildDateNumber = (y: string, m: string, d: string): number | null => {
+    if (!y || !m || !d) return null;
+
+    const year = parseInt(y, 10);
+    const month = parseInt(m, 10);
+    const day = parseInt(d, 10);
+
+    if (
+      Number.isNaN(year) ||
+      Number.isNaN(month) ||
+      Number.isNaN(day) ||
+      month < 1 ||
+      month > 12
+    ) {
+      return null;
+    }
+
+    return year * 10000 + month * 100 + day;
+  };
+
+  const setFrom = (update: { year?: string; month?: string; day?: string }) => {
+    const newFromYear = update.year ?? fromYear;
+    const newFromMonth = update.month ?? fromMonth;
+    let newFromDay = update.day ?? fromDay;
+
+    // Clamp day to valid range for that month/year
+    const maxDayForFrom = getDaysInMonth(newFromYear, newFromMonth);
+    if (newFromDay) {
+      const dNum = parseInt(newFromDay, 10);
+      if (!Number.isNaN(dNum) && dNum > maxDayForFrom) {
+        newFromDay = String(maxDayForFrom);
+      }
+    }
+
+    setFromYear(newFromYear);
+    setFromMonth(newFromMonth);
+    setFromDay(newFromDay);
+
+    // Enforce from <= to
+    const fromNum = buildDateNumber(newFromYear, newFromMonth, newFromDay);
+    const toNum = buildDateNumber(toYear, toMonth, toDay);
+
+    if (fromNum !== null && toNum !== null && fromNum > toNum) {
+      setToYear(newFromYear);
+      setToMonth(newFromMonth);
+      setToDay(newFromDay);
+    }
+  };
+
+  const setTo = (update: { year?: string; month?: string; day?: string }) => {
+    const newToYear = update.year ?? toYear;
+    const newToMonth = update.month ?? toMonth;
+    let newToDay = update.day ?? toDay;
+
+    // Clamp day to valid range for that month/year
+    const maxDayForTo = getDaysInMonth(newToYear, newToMonth);
+    if (newToDay) {
+      const dNum = parseInt(newToDay, 10);
+      if (!Number.isNaN(dNum) && dNum > maxDayForTo) {
+        newToDay = String(maxDayForTo);
+      }
+    }
+
+    setToYear(newToYear);
+    setToMonth(newToMonth);
+    setToDay(newToDay);
+
+    // Enforce from <= to
+    const fromNum = buildDateNumber(fromYear, fromMonth, fromDay);
+    const toNum = buildDateNumber(newToYear, newToMonth, newToDay);
+
+    if (fromNum !== null && toNum !== null && fromNum > toNum) {
+      setFromYear(newToYear);
+      setFromMonth(newToMonth);
+      setFromDay(newToDay);
+    }
+  };
 
   useEffect(() => {
     if (isEditingProjectTitle) {
@@ -301,15 +416,15 @@ function App() {
       {/* Polygon Tabs - Top of map */}
       {polygons.length > 0 && (
         <div className="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 z-10 w-full flex justify-center">
-          <div className="pointer-events-auto flex gap-2 overflow-x-auto max-w-[70%] justify-center">
+          <div className="pointer-events-auto flex gap-2 overflow-x-auto max-w-[70%] justify-center bg-white/10 backdrop-blur-[60px] rounded-full p-3">
             {polygons.map((poly) => (
               <div
                 key={poly.id}
                 className={cn(
                   "flex items-center gap-2 px-4 py-2 rounded-full cursor-pointer transition-colors whitespace-nowrap shrink-0",
                   selectedPolygonId === poly.id
-                    ? "bg-blue-500 text-white shadow-lg"
-                    : "bg-white/95 backdrop-blur-[60px] text-gray-700 hover:bg-white border border-white/20 shadow-lg"
+                    ? "bg-blue-600 text-white shadow-lg"
+                    : "bg-white/65 backdrop-blur-[60px] text-gray-700 hover:bg-white border border-white/20 shadow-lg"
                 )}
                 onClick={() => {
                   setSelectedPolygonId(poly.id);
@@ -447,7 +562,7 @@ function App() {
 
               {/* Map Type Selector */}
               <div>
-                <Label className="text-sm text-white mb-2 block">
+                <Label className="text-sm text-white mb-3 block">
                   Map Type
                 </Label>
                 <Select
@@ -594,18 +709,21 @@ function App() {
                 <div className="flex flex-col gap-2">
                   <p className="text-sm text-white ml-4">From</p>
                   <div className="flex gap-2 justify-between">
-                    <Select>
-                      <SelectTrigger className="w-full h-9 rounded-full bg-white text-sm shadow-sm">
-                        <SelectValue placeholder="Year" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="2025">2025</SelectItem>
-                        <SelectItem value="2024">2024</SelectItem>
-                        <SelectItem value="2023">2023</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {/* Year combobox */}
+                    <SimpleCombobox
+                      value={fromYear}
+                      onChange={(val) => setFrom({ year: val })}
+                      options={yearOptions}
+                      placeholder="Year"
+                    />
 
-                    <Select>
+                    {/* Month select */}
+                    <Select
+                      value={fromMonth}
+                      onValueChange={(value) => {
+                        setFrom({ month: value });
+                      }}
+                    >
                       <SelectTrigger className="w-full h-9 rounded-full bg-white text-sm shadow-sm">
                         <SelectValue placeholder="Month" />
                       </SelectTrigger>
@@ -625,36 +743,34 @@ function App() {
                       </SelectContent>
                     </Select>
 
-                    <Select>
-                      <SelectTrigger className="w-full h-9 rounded-full bg-white text-sm shadow-sm">
-                        <SelectValue placeholder="Day" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-56">
-                        {Array.from({ length: 31 }, (_, i) => (
-                          <SelectItem key={i + 1} value={String(i + 1)}>
-                            {i + 1}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    {/* Day combobox */}
+                    <SimpleCombobox
+                      value={fromDay}
+                      onChange={(val) => setFrom({ day: val })}
+                      options={fromDayOptions}
+                      placeholder="Day"
+                    />
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-2">
                   <p className="text-sm text-white ml-4">To</p>
                   <div className="flex gap-2 justify-between">
-                    <Select>
-                      <SelectTrigger className="w-full h-9 rounded-full bg-white text-sm shadow-sm">
-                        <SelectValue placeholder="Year" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="2025">2025</SelectItem>
-                        <SelectItem value="2024">2024</SelectItem>
-                        <SelectItem value="2023">2023</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {/* Year combobox */}
+                    <SimpleCombobox
+                      value={toYear}
+                      onChange={(val) => setTo({ year: val })}
+                      options={yearOptions}
+                      placeholder="Year"
+                    />
 
-                    <Select>
+                    {/* Month select */}
+                    <Select
+                      value={toMonth}
+                      onValueChange={(value) => {
+                        setTo({ month: value });
+                      }}
+                    >
                       <SelectTrigger className="w-full h-9 rounded-full bg-white text-sm shadow-sm">
                         <SelectValue placeholder="Month" />
                       </SelectTrigger>
@@ -674,18 +790,13 @@ function App() {
                       </SelectContent>
                     </Select>
 
-                    <Select>
-                      <SelectTrigger className="w-full h-9 rounded-full bg-white text-sm shadow-sm">
-                        <SelectValue placeholder="Day" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-56">
-                        {Array.from({ length: 31 }, (_, i) => (
-                          <SelectItem key={i + 1} value={String(i + 1)}>
-                            {i + 1}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    {/* Day combobox */}
+                    <SimpleCombobox
+                      value={toDay}
+                      onChange={(val) => setTo({ day: val })}
+                      options={toDayOptions}
+                      placeholder="Day"
+                    />
                   </div>
                 </div>
               </div>
