@@ -48,6 +48,45 @@ import {
 import { SimpleCombobox, type SimpleOption } from "./components/SimpleCombobox";
 import { CURRENT_YEAR, getDaysInMonth, MIN_YEAR } from "./helpers/date-helper";
 
+type SummaryPanelKey =
+  | "flood_risk"
+  | "water_snapshot"
+  | "difference"
+  | "risk_breakdown"
+  | "outlook";
+
+type AnalysisResponse = {
+  location_id: string;
+  time_window: {
+    start_date: string;
+    end_date: string;
+  };
+  suitability: {
+    score: number;
+    fao_class: string;
+    components: {
+      moisture_quality: number;
+      excess_water_quality: number;
+      terrain_quality: number;
+      temperature_quality: number;
+      accessibility_quality: number;
+    };
+  };
+  risks: {
+    flood: { score: number; label: string; footnote: string };
+    dryness: { score: number; label: string; footnote: string };
+    shoreline: { score: number; label: string; footnote: string };
+    seasonality: { score: number; label: string; footnote: string };
+  };
+  summary_panels: Record<
+    SummaryPanelKey,
+    {
+      title: string;
+      bullets: string[];
+    }
+  >;
+};
+
 function App() {
   const [isMapSettingsOpen, setIsMapSettingsOpen] = useState(true);
   const [isRisksOpen, setIsRisksOpen] = useState(false);
@@ -88,7 +127,181 @@ function App() {
   const [toMonth, setToMonth] = useState("");
   const [toDay, setToDay] = useState("");
 
-    const yearOptions: SimpleOption[] = Array.from(
+  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [isRequesting, setIsRequesting] = useState(false);
+
+  const normalizeCoordinates = (
+    coords: Array<{ lat: string; lng: string }>
+  ): Array<{ lat: number; lng: number }> =>
+    coords
+      .map((c) => ({ lat: parseFloat(c.lat), lng: parseFloat(c.lng) }))
+      .filter(
+        (c) =>
+          !Number.isNaN(c.lat) &&
+          !Number.isNaN(c.lng) &&
+          c.lat >= -90 &&
+          c.lat <= 90 &&
+          c.lng >= -180 &&
+          c.lng <= 180
+      );
+
+  const getPolygonCoordinates = (
+    poly: PolygonData
+  ): Array<{ lat: number; lng: number }> => {
+    const path = poly.polygon?.getPath?.();
+    if (path && typeof path.getLength === "function") {
+      const coords: Array<{ lat: number; lng: number }> = [];
+      path.forEach((latLng) => {
+        coords.push({ lat: latLng.lat(), lng: latLng.lng() });
+      });
+      return coords;
+    }
+
+    if (poly.coordinates?.length) {
+      return poly.coordinates.map((c) => ({ lat: c.lat, lng: c.lng }));
+    }
+
+    return [];
+  };
+
+  const computeBoundingBox = (
+    coords: Array<{ lat: number; lng: number }>
+  ): [number, number, number, number] | null => {
+    if (!coords.length) return null;
+
+    let minLat = Infinity;
+    let maxLat = -Infinity;
+    let minLng = Infinity;
+    let maxLng = -Infinity;
+
+    coords.forEach((c) => {
+      minLat = Math.min(minLat, c.lat);
+      maxLat = Math.max(maxLat, c.lat);
+      minLng = Math.min(minLng, c.lng);
+      maxLng = Math.max(maxLng, c.lng);
+    });
+
+    return [minLng, minLat, maxLng, maxLat];
+  };
+
+  const getActiveCoordinates = () => {
+    if (selectedPolygonId) {
+      const poly = polygons.find((p) => p.id === selectedPolygonId);
+      if (poly) {
+        const coords = getPolygonCoordinates(poly);
+        if (coords.length) return coords;
+      }
+    }
+
+    return normalizeCoordinates(coordinates);
+  };
+
+  const pad = (value: string) => value.padStart(2, "0");
+
+  const buildIsoDate = (y: string, m: string, d: string) => {
+    if (!y || !m || !d) return null;
+    return `${y}-${pad(m)}-${pad(d)}`;
+  };
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  const buildPeriods = () => {
+    const start = buildIsoDate(fromYear, fromMonth, fromDay) || todayIso;
+    const end = buildIsoDate(toYear, toMonth, toDay) || todayIso;
+
+    return {
+      baseline: {
+        start_date: start,
+        end_date: end,
+      },
+      current: {
+        start_date: start,
+        end_date: end,
+      },
+    };
+  };
+
+  const API_URL = "http://localhost:3003/suitability/analyze";
+
+  const buildApiRequestBody = () => {
+    const coords = getActiveCoordinates();
+    const bbox = computeBoundingBox(coords);
+
+    if (!bbox) {
+      throw new Error(
+        "Please draw or enter at least one polygon to define AOI"
+      );
+    }
+
+    return {
+      aoi: {
+        type: "bbox",
+        value: bbox,
+      },
+      periods: buildPeriods(),
+      options: {
+        max_cloud_percentage: 30,
+        ndwi_water_threshold: 0.2,
+        scale: 10,
+      },
+    };
+  };
+
+  const handleRunAnalysis = async (sourceLabel: string) => {
+    try {
+      setIsRequesting(true);
+      const body = buildApiRequestBody();
+
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Request failed with status ${res.status}`);
+      }
+
+      const response = (await res.json()) as AnalysisResponse;
+
+      setAnalysis(response);
+      window.alert(
+        `${sourceLabel}\nRequest body:\n${JSON.stringify(
+          body,
+          null,
+          2
+        )}\n\nResponse:\n${JSON.stringify(response, null, 2)}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      window.alert(`Request failed: ${message}`);
+    } finally {
+      setIsRequesting(false);
+    }
+  };
+
+  const handleRequestSuitability = () =>
+    handleRunAnalysis("Suitability request");
+
+  const handleRequestRisks = () => handleRunAnalysis("Risks request");
+
+  const handleFileAction = (action: string) => {
+    try {
+      const body = buildApiRequestBody();
+      window.alert(
+        `File action: ${action}\nCurrent request body:\n${JSON.stringify(
+          body,
+          null,
+          2
+        )}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      window.alert(`File action blocked: ${message}`);
+    }
+  };
+
+  const yearOptions: SimpleOption[] = Array.from(
     { length: CURRENT_YEAR - MIN_YEAR + 1 },
     (_, idx) => {
       const y = CURRENT_YEAR - idx;
@@ -200,6 +413,77 @@ function App() {
     }
   }, [isEditingProjectTitle]);
 
+  const summaryFallbacks: Record<
+    SummaryPanelKey,
+    { title: string; bullets: string[] }
+  > = {
+    flood_risk: {
+      title: "Flood Risk",
+      bullets: [
+        "High Water Levels",
+        "Rapid Flow Increase",
+        "Soil Saturation",
+        "Rainfall Surge",
+        "Critical Threshold",
+      ],
+    },
+    water_snapshot: {
+      title: "Water Snapshot",
+      bullets: [
+        "High Water Levels",
+        "Rapid Flow Increase",
+        "Soil Saturation",
+        "Rainfall Surge",
+        "Critical Threshold",
+      ],
+    },
+    difference: {
+      title: "Difference",
+      bullets: ["High Water Levels"],
+    },
+    risk_breakdown: {
+      title: "Risk Breakdown",
+      bullets: [
+        "High Water Levels",
+        "Rapid Flow Increase",
+        "Soil Saturation",
+        "Rainfall Surge",
+        "Critical Threshold",
+      ],
+    },
+    outlook: {
+      title: "Outlook Panel",
+      bullets: [
+        "High Water Levels",
+        "Rapid Flow Increase",
+        "Soil Saturation",
+        "Rainfall Surge",
+        "Critical Threshold",
+      ],
+    },
+  };
+
+  const getSummaryPanel = (key: SummaryPanelKey) =>
+    analysis?.summary_panels[key] ?? summaryFallbacks[key];
+
+  const getRiskColor = (label: string) => {
+    const normalized = label.toLowerCase();
+    if (normalized.includes("low")) return "text-green-500";
+    if (normalized.includes("medium")) return "text-amber-300";
+    if (normalized.includes("high")) return "text-red-600";
+    return "text-gray-600";
+  };
+
+  const riskItems: Array<{
+    key: keyof AnalysisResponse["risks"];
+    title: string;
+  }> = [
+    { key: "flood", title: "Flood Risk" },
+    { key: "dryness", title: "Dryness Risk" },
+    { key: "shoreline", title: "Shoreline Risk" },
+    { key: "seasonality", title: "Seasonality" },
+  ];
+
   // Handle delete key to remove selected polygon
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -258,9 +542,7 @@ function App() {
         {/* File dropdown (with submenu like in your design) */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button
-              className="pointer-events-auto rounded-full bg-white px-5 py-2 text-sm font-medium text-gray-800 shadow-lg ring-8 ring-white/40 hover:bg-white flex items-center gap-2"
-            >
+            <Button className="pointer-events-auto rounded-full bg-white px-5 py-2 text-sm font-medium text-gray-800 shadow-lg ring-8 ring-white/40 hover:bg-white flex items-center gap-2">
               <span>File</span>
               <ChevronDown className="h-4 w-4 text-gray-500" />
             </Button>
@@ -270,19 +552,43 @@ function App() {
             sideOffset={12}
             className="min-w-[260px] rounded-4xl border border-white/40 bg-white/80 p-4 shadow-2xl backdrop-blur-2xl text-sm text-gray-800 space-y-1"
           >
-            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleFileAction("New Project");
+              }}
+              className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white"
+            >
               New Project
               <FilePlusCorner />
             </DropdownMenuItem>
-            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleFileAction("Open Project");
+              }}
+              className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white"
+            >
               Open
               <FolderOpen />
             </DropdownMenuItem>
-            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleFileAction("Save Project");
+              }}
+              className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white"
+            >
               Save
               <Save />
             </DropdownMenuItem>
-            <DropdownMenuItem className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white">
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleFileAction("Export Project");
+              }}
+              className="flex items-center justify-between cursor-pointer rounded-2xl px-3 py-2 hover:bg-white"
+            >
               Export
               <Download />
             </DropdownMenuItem>
@@ -291,7 +597,10 @@ function App() {
 
         {/* Config dropdown */}
         <div className="pointer-events-auto rounded-full ring-8 ring-white/20 bg-white/20">
-          <Select value={units} onValueChange={(v: "metric" | "imperial") => setUnits(v)}>
+          <Select
+            value={units}
+            onValueChange={(v: "metric" | "imperial") => setUnits(v)}
+          >
             <SelectTrigger className="w-full rounded-full bg-white text-sm shadow-sm">
               <SelectValue />
             </SelectTrigger>
@@ -507,7 +816,6 @@ function App() {
         </div>
       )}
 
-
       {/* Control panel */}
       <div className="pointer-events-none absolute inset-0 flex flex-col items-end justify-start gap-3 p-4 sm:p-6 lg:p-8 overflow-auto">
         <div className="pointer-events-auto w-full max-w-xs sm:max-w-sm rounded-4xl bg-white/20 p-2 backdrop-blur-xs">
@@ -518,7 +826,24 @@ function App() {
                 Based on water percentage change*
               </p>
             </div>
-            <Label className="text-2xl text-green-600">72/100</Label>
+            <div className="flex flex-col items-end gap-2">
+              <Label className="text-2xl text-green-600">
+                {analysis ? `${analysis.suitability.score}/100` : "—"}
+              </Label>
+              {analysis?.suitability.fao_class && (
+                <p className="text-xs text-gray-500">
+                  {analysis.suitability.fao_class}
+                </p>
+              )}
+              <Button
+                size="sm"
+                className="h-8 rounded-full bg-green-50 text-green-700 hover:bg-green-100"
+                onClick={handleRequestSuitability}
+                disabled={isRequesting}
+              >
+                {isRequesting ? "Requesting..." : "Request data"}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -918,54 +1243,43 @@ function App() {
 
           {isRisksOpen && (
             <CardContent className="space-y-6">
+              <div className="flex items-center justify-between rounded-3xl bg-white/20 px-4 py-3 ring-8 ring-white/20">
+                <p className="text-sm text-white">
+                  Trigger risks API (placeholder)
+                </p>
+                <Button
+                  size="sm"
+                  className="h-8 rounded-full bg-white text-gray-700 hover:bg-gray-100"
+                  onClick={handleRequestRisks}
+                  disabled={isRequesting}
+                >
+                  {isRequesting ? "Requesting..." : "Send"}
+                </Button>
+              </div>
+
               <div className="flex flex-col gap-2 ring-8 ring-white/20 rounded-3xl bg-white/20">
-                <div className="flex justify-between items-center bg-white p-4 rounded-3xl ">
-                  <p className="text-black/60">Flood Risk</p>
-                  <div className="flex flex-col text-end">
-                    <Label className="text-xl self-end text-amber-300">
-                      Medium
-                    </Label>
-                    <p className="text-xs text-gray-600">
-                      Based on water percentage change*
-                    </p>
-                  </div>
-                </div>
+                {riskItems.map((item) => {
+                  const risk = analysis?.risks[item.key];
+                  const label = risk?.label ?? "Unknown";
+                  const footnote =
+                    risk?.footnote ?? "Based on water percentage change*";
+                  const color = getRiskColor(label);
 
-                <div className="flex justify-between items-center bg-white p-4 rounded-3xl ">
-                  <p className="text-black/60">Dryness Risk</p>
-                  <div className="flex flex-col text-end">
-                    <Label className="text-xl self-end text-green-500">
-                      Low
-                    </Label>
-                    <p className="text-xs text-gray-600">
-                      Based on water percentage change*
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex justify-between items-center bg-white p-4 rounded-3xl ">
-                  <p className="text-black/60">Shoreline Risk</p>
-                  <div className="flex flex-col text-end">
-                    <Label className="text-xl self-end text-amber-300">
-                      Medium
-                    </Label>
-                    <p className="text-xs text-gray-600">
-                      Based on water percentage change*
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex justify-between items-center bg-white p-4 rounded-3xl ">
-                  <p className="text-black/60">Seasonality</p>
-                  <div className="flex flex-col text-end">
-                    <Label className="text-xl self-end text-red-600">
-                      Strong
-                    </Label>
-                    <p className="text-xs text-gray-600">
-                      Based on water percentage change*
-                    </p>
-                  </div>
-                </div>
+                  return (
+                    <div
+                      key={item.key}
+                      className="flex justify-between items-center bg-white p-4 rounded-3xl"
+                    >
+                      <p className="text-black/60">{item.title}</p>
+                      <div className="flex flex-col text-end">
+                        <Label className={cn("text-xl self-end", color)}>
+                          {label}
+                        </Label>
+                        <p className="text-xs text-gray-600">{footnote}</p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </CardContent>
           )}
@@ -998,86 +1312,70 @@ function App() {
                       Based on water percentage change*
                     </p>
                   </div>
-                  <Label className="text-2xl text-green-600">72/100</Label>
+                  <div className="flex flex-col items-end">
+                    <Label className="text-2xl text-green-600">
+                      {analysis ? `${analysis.suitability.score}/100` : "—"}
+                    </Label>
+                    {analysis?.suitability.fao_class && (
+                      <span className="text-xs text-gray-500">
+                        {analysis.suitability.fao_class}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                <div className="flex flex-col bg-white p-4 rounded-3xl gap-2">
-                  <p className="text-black/60">Flood Risk</p>
-                  <ul className="list-disc pl-6 text-black/60 text-sm">
-                    <li>High Water Levels</li>
-                    <li>Rapid Flow Increase</li>
-                    <li>Soil Saturation</li>
-                    <li>Rainfall Surge</li>
-                    <li>Critical Threshold</li>
-                  </ul>
-                </div>
-
-                <div className="flex flex-col bg-white p-4 rounded-3xl gap-2">
-                  <p className="text-black/60">Water Snapshot</p>
-                  <ul className="list-disc pl-6 text-black/60 text-sm">
-                    <li>High Water Levels</li>
-                    <li>Rapid Flow Increase</li>
-                    <li>Soil Saturation</li>
-                    <li>Rainfall Surge</li>
-                    <li>Critical Threshold</li>
-                  </ul>
-                </div>
+                {["flood_risk", "water_snapshot"].map((key) => {
+                  const panel = getSummaryPanel(key as SummaryPanelKey);
+                  return (
+                    <div
+                      key={panel.title}
+                      className="flex flex-col bg-white p-4 rounded-3xl gap-2"
+                    >
+                      <p className="text-black/60">{panel.title}</p>
+                      <ul className="list-disc pl-6 text-black/60 text-sm">
+                        {panel.bullets.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="flex flex-col gap-2 ring-8 ring-white/20 rounded-3xl bg-white/20">
                 <div className="flex gap-2">
-                  <div className="w-full flex flex-col bg-white p-4 rounded-3xl gap-2">
-                    <p className="text-black/60">Flood Risk</p>
-                    <ul className="list-disc pl-6 text-black/60 text-xs">
-                      <li>High Water Levels</li>
-                      <li>Rapid Flow </li>
-                      <li>Soil </li>
-                      <li>Rainfall Surge</li>
-                      <li>Critical Threshold</li>
-                    </ul>
-                  </div>
-
-                  <div className="w-full flex flex-col bg-white p-4 rounded-3xl gap-2">
-                    <p className="text-black/60">Water Snapshot</p>
-                    <ul className="list-disc pl-6 text-black/60 text-xs">
-                      <li>High Water Levels</li>
-                      <li>Rapid Flow Increase</li>
-                      <li>Soil Saturation</li>
-                      <li>Rainfall Surge</li>
-                      <li>Critical Threshold</li>
-                    </ul>
-                  </div>
+                  {["risk_breakdown", "outlook"].map((key) => {
+                    const panel = getSummaryPanel(key as SummaryPanelKey);
+                    return (
+                      <div
+                        key={panel.title}
+                        className="w-full flex flex-col bg-white p-4 rounded-3xl gap-2"
+                      >
+                        <p className="text-black/60">{panel.title}</p>
+                        <ul className="list-disc pl-6 text-black/60 text-xs">
+                          {panel.bullets.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 <div className="flex flex-col gap-1 bg-white p-4 rounded-3xl">
-                  <p className="text-black/60">Difference</p>
-                  <ul className="list-disc pl-6 text-black/60 text-xs">
-                    <li>High Water Levels</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2 ring-8 ring-white/20 rounded-3xl bg-white/20">
-                <div className="flex flex-col bg-white p-4 rounded-3xl gap-2">
-                  <p className="text-black/60">Risk Breakdown</p>
-                  <ul className="list-disc pl-6 text-black/60 text-sm">
-                    <li>High Water Levels</li>
-                    <li>Rapid Flow Increase</li>
-                    <li>Soil Saturation</li>
-                    <li>Rainfall Surge</li>
-                    <li>Critical Threshold</li>
-                  </ul>
-                </div>
-
-                <div className="flex flex-col bg-white p-4 rounded-3xl gap-2">
-                  <p className="text-black/60">Outlook Panel</p>
-                  <ul className="list-disc pl-6 text-black/60 text-sm">
-                    <li>High Water Levels</li>
-                    <li>Rapid Flow Increase</li>
-                    <li>Soil Saturation</li>
-                    <li>Rainfall Surge</li>
-                    <li>Critical Threshold</li>
-                  </ul>
+                  {(() => {
+                    const panel = getSummaryPanel("difference");
+                    return (
+                      <>
+                        <p className="text-black/60">{panel.title}</p>
+                        <ul className="list-disc pl-6 text-black/60 text-xs">
+                          {panel.bullets.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             </CardContent>
